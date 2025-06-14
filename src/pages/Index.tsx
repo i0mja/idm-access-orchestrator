@@ -23,6 +23,7 @@ import ApplicationManager from '@/components/ApplicationManager';
 import TestAccess from '@/components/TestAccess';
 import SystemStatus from '@/components/SystemStatus';
 import TrustDomains from '@/components/TrustDomains';
+import UserManager from '@/components/UserManager';
 import { useToast } from '@/hooks/use-toast';
 
 interface SystemStatusData {
@@ -201,7 +202,7 @@ const Index = () => {
 
         {/* Main Content */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="grid w-full grid-cols-5 mb-6">
+          <TabsList className="grid w-full grid-cols-6 mb-6">
             <TabsTrigger value="dashboard" className="flex items-center space-x-2">
               <Server className="h-4 w-4" />
               <span>Dashboard</span>
@@ -209,6 +210,10 @@ const Index = () => {
             <TabsTrigger value="applications" className="flex items-center space-x-2">
               <Shield className="h-4 w-4" />
               <span>Applications</span>
+            </TabsTrigger>
+            <TabsTrigger value="users" className="flex items-center space-x-2">
+              <Users className="h-4 w-4" />
+              <span>Users</span>
             </TabsTrigger>
             <TabsTrigger value="domains" className="flex items-center space-x-2">
               <Users className="h-4 w-4" />
@@ -342,6 +347,10 @@ const Index = () => {
               onApplicationsChange={setApplications}
               onRefresh={fetchApplications}
             />
+          </TabsContent>
+
+          <TabsContent value="users">
+            <UserManager />
           </TabsContent>
 
           <TabsContent value="domains">
