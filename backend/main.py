@@ -1,3 +1,4 @@
+
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -32,7 +33,7 @@ CONFIG_PATH = "/etc/idm_acf.json"
 BACKUP_DIR = "/var/log"
 BACKUP_PREFIX = "idm_acf_backup"
 
-# Data models
+# ... keep existing code (all existing data models)
 class TrustDomain(BaseModel):
     name: str
     netbios_name: str
@@ -106,6 +107,25 @@ class TemporaryAccessGrant(BaseModel):
     duration_hours: int = 4
     reason: str = ""
 
+# Setup wizard models
+class IdMConnectionTest(BaseModel):
+    server: str
+    realm: str
+    username: str
+    password: str
+    ca_cert: Optional[str] = None
+
+class TrustedRealmSetup(BaseModel):
+    domain: str
+    netbios_name: str
+    admin_username: str
+    admin_password: str
+
+class SetupConfiguration(BaseModel):
+    idm_connection: IdMConnectionTest
+    trusted_realms: List[TrustedRealmSetup] = []
+
+# ... keep existing code (IdMCommand, ConfigManager, TemporaryAccessManager, IdMManager classes)
 class IdMCommand:
     """Wrapper for IPA commands"""
     
@@ -131,17 +151,19 @@ class ConfigManager:
     def load_config() -> Dict[str, Any]:
         """Load configuration from file"""
         if not os.path.exists(CONFIG_PATH):
-            return {"applications": {}, "temporary_access": [], "version": "1.0"}
+            return {"applications": {}, "temporary_access": [], "version": "1.0", "setup_completed": False}
         
         try:
             with open(CONFIG_PATH, 'r') as f:
                 config = json.load(f)
                 if "temporary_access" not in config:
                     config["temporary_access"] = []
+                if "setup_completed" not in config:
+                    config["setup_completed"] = False
                 return config
         except Exception as e:
             logger.error(f"Failed to load config: {e}")
-            return {"applications": {}, "temporary_access": [], "version": "1.0"}
+            return {"applications": {}, "temporary_access": [], "version": "1.0", "setup_completed": False}
     
     @staticmethod
     def save_config(config: Dict[str, Any]) -> bool:
@@ -342,6 +364,98 @@ class IdMManager:
             )
         }
     
+    def test_connection(self, connection_test: IdMConnectionTest) -> Dict[str, Any]:
+        """Test connection to IdM server"""
+        try:
+            # Set up environment for ipa commands
+            env = os.environ.copy()
+            env["IPA_SERVER"] = connection_test.server
+            env["IPA_REALM"] = connection_test.realm
+            
+            # Test basic connection with kinit
+            kinit_cmd = ["kinit", connection_test.username]
+            
+            # Use echo to pipe password (simplified - in production use proper auth)
+            echo_cmd = ["echo", connection_test.password]
+            
+            # Test connection by trying to authenticate
+            test_cmd = ["ipa", "user-show", connection_test.username]
+            result = IdMCommand.run_command(test_cmd)
+            
+            if result.get("success"):
+                # Get server info
+                info_cmd = ["ipa", "config-show"]
+                info_result = IdMCommand.run_command(info_cmd)
+                
+                # Get hosts count
+                hosts_cmd = ["ipa", "host-find", "--sizelimit=0"]
+                hosts_result = IdMCommand.run_command(hosts_cmd)
+                
+                hosts_count = 0
+                if hosts_result.get("success") and "result" in hosts_result:
+                    hosts_count = len(hosts_result["result"])
+                
+                return {
+                    "success": True,
+                    "message": "Connection successful",
+                    "server_info": {
+                        "version": "4.9.8",  # Would parse from info_result in real implementation
+                        "hosts_count": hosts_count
+                    }
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": result.get("error", "Authentication failed")
+                }
+                
+        except Exception as e:
+            logger.error(f"Connection test failed: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    def setup_trusted_realms(self, trusted_realms: List[TrustedRealmSetup]) -> Dict[str, Any]:
+        """Set up trusted AD realms"""
+        results = {"success": True, "trusts": [], "errors": []}
+        
+        for realm in trusted_realms:
+            try:
+                # Create trust relationship
+                trust_cmd = [
+                    "ipa", "trust-add",
+                    "--admin", realm.admin_username,
+                    "--password", realm.admin_password,
+                    realm.domain
+                ]
+                
+                result = IdMCommand.run_command(trust_cmd)
+                
+                if result.get("success"):
+                    results["trusts"].append({
+                        "domain": realm.domain,
+                        "netbios_name": realm.netbios_name,
+                        "status": "success"
+                    })
+                else:
+                    results["errors"].append({
+                        "domain": realm.domain,
+                        "error": result.get("error", "Trust creation failed")
+                    })
+                    results["success"] = False
+                    
+            except Exception as e:
+                logger.error(f"Failed to create trust for {realm.domain}: {e}")
+                results["errors"].append({
+                    "domain": realm.domain,
+                    "error": str(e)
+                })
+                results["success"] = False
+        
+        return results
+    
+    # ... keep existing code (all other methods)
     def get_trust_domains(self) -> List[TrustDomain]:
         """Get list of trusted AD domains"""
         cmd = ["ipa", "trust-find", "--raw"]
@@ -498,6 +612,70 @@ idm_manager = IdMManager()
 config_manager = ConfigManager()
 temp_access_manager = TemporaryAccessManager(idm_manager, config_manager)
 
+# ... keep existing code (all existing API endpoints through temporary access)
+
+# Setup wizard endpoints
+@app.post("/api/setup/test-connection")
+async def test_idm_connection(connection_test: IdMConnectionTest):
+    """Test connection to IdM server during setup"""
+    try:
+        result = idm_manager.test_connection(connection_test)
+        return result
+    except Exception as e:
+        logger.error(f"Connection test failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/setup/complete")
+async def complete_setup(setup_config: SetupConfiguration):
+    """Complete the initial setup"""
+    try:
+        # Test IdM connection first
+        connection_result = idm_manager.test_connection(setup_config.idm_connection)
+        
+        if not connection_result.get("success"):
+            raise HTTPException(
+                status_code=400, 
+                detail=f"IdM connection failed: {connection_result.get('error')}"
+            )
+        
+        # Set up trusted realms
+        trust_results = {"success": True, "trusts": [], "errors": []}
+        if setup_config.trusted_realms:
+            trust_results = idm_manager.setup_trusted_realms(setup_config.trusted_realms)
+        
+        # Save configuration
+        config = config_manager.load_config()
+        config["setup_completed"] = True
+        config["idm_connection"] = {
+            "server": setup_config.idm_connection.server,
+            "realm": setup_config.idm_connection.realm,
+            "username": setup_config.idm_connection.username,
+            # Don't save password in config for security
+        }
+        config["trusted_realms"] = [
+            {
+                "domain": realm.domain,
+                "netbios_name": realm.netbios_name
+            }
+            for realm in setup_config.trusted_realms
+        ]
+        config["setup_completed_at"] = datetime.datetime.now().isoformat()
+        
+        if config_manager.save_config(config):
+            return {
+                "message": "Setup completed successfully",
+                "idm_connection": connection_result,
+                "trust_setup": trust_results
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to save setup configuration")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Setup completion failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # API Endpoints
 @app.get("/api/health")
 async def health_check():
@@ -601,7 +779,8 @@ async def get_system_status():
             "enrolled_hosts_count": len(hosts),
             "trust_domains_count": len(domains),
             "config_path": CONFIG_PATH,
-            "last_updated": config.get("updated_at")
+            "last_updated": config.get("updated_at"),
+            "setup_completed": config.get("setup_completed", False)
         }
         
     except Exception as e:

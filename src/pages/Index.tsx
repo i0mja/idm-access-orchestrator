@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -24,6 +23,7 @@ import TestAccess from '@/components/TestAccess';
 import SystemStatus from '@/components/SystemStatus';
 import TrustDomains from '@/components/TrustDomains';
 import UserManager from '@/components/UserManager';
+import SetupWizard from '@/components/SetupWizard';
 import { useToast } from '@/hooks/use-toast';
 
 interface SystemStatusData {
@@ -33,6 +33,7 @@ interface SystemStatusData {
   trust_domains_count: number;
   config_path: string;
   last_updated?: string;
+  setup_completed?: boolean;
 }
 
 interface Application {
@@ -57,6 +58,7 @@ const Index = () => {
   const [systemStatus, setSystemStatus] = useState<SystemStatusData | null>(null);
   const [applications, setApplications] = useState<Record<string, Application>>({});
   const [loading, setLoading] = useState(true);
+  const [showSetupWizard, setShowSetupWizard] = useState(false);
   const { toast } = useToast();
 
   const fetchSystemStatus = async () => {
@@ -64,12 +66,18 @@ const Index = () => {
       const response = await fetch('/api/status');
       const data = await response.json();
       setSystemStatus(data);
+      
+      // Show setup wizard if system is not configured
+      if (!data.setup_completed && !data.idm_connected) {
+        setShowSetupWizard(true);
+      }
     } catch (error) {
       console.error('Failed to fetch system status:', error);
+      // Show setup wizard if we can't get status (likely first run)
+      setShowSetupWizard(true);
       toast({
-        title: "Error",
-        description: "Failed to fetch system status",
-        variant: "destructive"
+        title: "System Check",
+        description: "Setting up IdM ACF for first use",
       });
     }
   };
@@ -98,6 +106,20 @@ const Index = () => {
   useEffect(() => {
     refreshData();
   }, []);
+
+  const handleSetupComplete = () => {
+    setShowSetupWizard(false);
+    toast({
+      title: "Setup Complete",
+      description: "IdM ACF is now ready to use"
+    });
+    refreshData();
+  };
+
+  // Show setup wizard if needed
+  if (showSetupWizard) {
+    return <SetupWizard onComplete={handleSetupComplete} />;
+  }
 
   const exportConfiguration = async () => {
     try {
@@ -180,6 +202,10 @@ const Index = () => {
               <Button onClick={exportConfiguration} variant="outline" size="sm">
                 <Download className="h-4 w-4 mr-2" />
                 Export
+              </Button>
+              <Button onClick={() => setShowSetupWizard(true)} variant="outline" size="sm">
+                <Settings className="h-4 w-4 mr-2" />
+                Setup
               </Button>
             </div>
           </div>
