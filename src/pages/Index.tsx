@@ -25,7 +25,7 @@ import SystemStatus from '@/components/SystemStatus';
 import TrustDomains from '@/components/TrustDomains';
 import { useToast } from '@/hooks/use-toast';
 
-interface SystemStatus {
+interface SystemStatusData {
   idm_connected: boolean;
   applications_count: number;
   enrolled_hosts_count: number;
@@ -53,7 +53,7 @@ interface Environment {
 
 const Index = () => {
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
+  const [systemStatus, setSystemStatus] = useState<SystemStatusData | null>(null);
   const [applications, setApplications] = useState<Record<string, Application>>({});
   const [loading, setLoading] = useState(true);
   const { toast } = useToast();
