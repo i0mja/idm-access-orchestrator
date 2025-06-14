@@ -1,4 +1,3 @@
-
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -9,6 +8,8 @@ import yaml
 import os
 import datetime
 import logging
+import uuid
+import asyncio
 from pathlib import Path
 
 # Configure logging
@@ -81,6 +82,30 @@ class TestAccessRequest(BaseModel):
     target_host: str
     command: str = "sudo -l"
 
+class TemporaryAccessRequest(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user: str
+    domain: str
+    application: str
+    environment: str
+    role: str
+    reason: str = ""
+    requested_by: str = "admin"  # In real implementation, get from authentication
+    requested_at: datetime.datetime = Field(default_factory=datetime.datetime.now)
+    expires_at: datetime.datetime
+    status: str = "approved"  # pending, approved, denied, expired
+    approved_by: Optional[str] = None
+    approved_at: Optional[datetime.datetime] = None
+
+class TemporaryAccessGrant(BaseModel):
+    user: str
+    domain: str
+    application: str
+    environment: str
+    role: str
+    duration_hours: int = 4
+    reason: str = ""
+
 class IdMCommand:
     """Wrapper for IPA commands"""
     
@@ -106,14 +131,17 @@ class ConfigManager:
     def load_config() -> Dict[str, Any]:
         """Load configuration from file"""
         if not os.path.exists(CONFIG_PATH):
-            return {"applications": {}, "version": "1.0"}
+            return {"applications": {}, "temporary_access": [], "version": "1.0"}
         
         try:
             with open(CONFIG_PATH, 'r') as f:
-                return json.load(f)
+                config = json.load(f)
+                if "temporary_access" not in config:
+                    config["temporary_access"] = []
+                return config
         except Exception as e:
             logger.error(f"Failed to load config: {e}")
-            return {"applications": {}, "version": "1.0"}
+            return {"applications": {}, "temporary_access": [], "version": "1.0"}
     
     @staticmethod
     def save_config(config: Dict[str, Any]) -> bool:
@@ -135,6 +163,151 @@ class ConfigManager:
         except Exception as e:
             logger.error(f"Failed to save config: {e}")
             return False
+
+class TemporaryAccessManager:
+    """Manages temporary access grants and cleanup"""
+    
+    def __init__(self, idm_manager, config_manager):
+        self.idm_manager = idm_manager
+        self.config_manager = config_manager
+    
+    def grant_temporary_access(self, grant_request: TemporaryAccessGrant) -> TemporaryAccessRequest:
+        """Grant temporary access by creating temporary IdM objects"""
+        expires_at = datetime.datetime.now() + datetime.timedelta(hours=grant_request.duration_hours)
+        
+        # Create temporary access request
+        temp_request = TemporaryAccessRequest(
+            user=grant_request.user,
+            domain=grant_request.domain,
+            application=grant_request.application,
+            environment=grant_request.environment,
+            role=grant_request.role,
+            reason=grant_request.reason,
+            expires_at=expires_at,
+            approved_at=datetime.datetime.now()
+        )
+        
+        # Create temporary IdM objects
+        self._create_temporary_objects(temp_request)
+        
+        # Save to config
+        config = self.config_manager.load_config()
+        config["temporary_access"].append(temp_request.dict())
+        self.config_manager.save_config(config)
+        
+        # Schedule cleanup
+        self._schedule_cleanup(temp_request.id, grant_request.duration_hours)
+        
+        return temp_request
+    
+    def _create_temporary_objects(self, request: TemporaryAccessRequest):
+        """Create temporary IdM groups and rules"""
+        temp_suffix = f"temp-{request.id[:8]}"
+        user_principal = f"{request.user}@{request.domain}"
+        
+        # Create temporary external group
+        temp_ext_group = f"{request.application}-{request.environment}-{request.role}-{temp_suffix}"
+        cmd = ["ipa", "group-add", temp_ext_group, "--external", "--desc", f"Temporary access for {user_principal}"]
+        result = IdMCommand.run_command(cmd)
+        
+        if result.get("success"):
+            # Add user to external group (simplified - in reality would add AD group)
+            member_cmd = ["ipa", "group-add-member", temp_ext_group, "--external", user_principal]
+            IdMCommand.run_command(member_cmd)
+            
+            # Create temporary POSIX group
+            temp_posix_group = f"{request.application}-{request.environment}-{request.role}-posix-{temp_suffix}"
+            posix_cmd = ["ipa", "group-add", temp_posix_group, "--desc", f"Temporary POSIX group for {user_principal}"]
+            posix_result = IdMCommand.run_command(posix_cmd)
+            
+            if posix_result.get("success"):
+                # Add external group to POSIX group
+                IdMCommand.run_command(["ipa", "group-add-member", temp_posix_group, "--groups", temp_ext_group])
+                
+                # Get existing hostgroup
+                hostgroup_name = f"{request.application}-{request.environment.lower()}-hosts"
+                
+                # Create temporary HBAC rule
+                temp_hbac = f"{request.application}-{request.environment}-{request.role}-temp-{temp_suffix}"
+                hbac_cmd = ["ipa", "hbacrule-add", temp_hbac, "--desc", f"Temporary HBAC for {user_principal}"]
+                hbac_result = IdMCommand.run_command(hbac_cmd)
+                
+                if hbac_result.get("success"):
+                    IdMCommand.run_command(["ipa", "hbacrule-add-user", temp_hbac, "--groups", temp_posix_group])
+                    IdMCommand.run_command(["ipa", "hbacrule-add-host", temp_hbac, "--hostgroups", hostgroup_name])
+                    IdMCommand.run_command(["ipa", "hbacrule-add-service", temp_hbac, "--hbacsvcs", "sshd"])
+                
+                # Create temporary sudo rule
+                temp_sudo = f"{request.application}-{request.environment}-{request.role}-sudo-temp-{temp_suffix}"
+                sudo_cmd = ["ipa", "sudorule-add", temp_sudo, "--desc", f"Temporary sudo for {user_principal}"]
+                sudo_result = IdMCommand.run_command(sudo_cmd)
+                
+                if sudo_result.get("success"):
+                    IdMCommand.run_command(["ipa", "sudorule-add-user", temp_sudo, "--groups", temp_posix_group])
+                    IdMCommand.run_command(["ipa", "sudorule-add-host", temp_sudo, "--hostgroups", hostgroup_name])
+                    
+                    # Add commands based on role
+                    template = self.idm_manager.sudo_templates.get(request.role)
+                    if template:
+                        for cmd_str in template.commands:
+                            IdMCommand.run_command(["ipa", "sudorule-add-allow-command", temp_sudo, "--sudocmds", cmd_str])
+    
+    def _schedule_cleanup(self, request_id: str, hours: int):
+        """Schedule cleanup of temporary access (simplified implementation)"""
+        # In a real implementation, this would use a proper task queue like Celery
+        # For now, we'll just log the scheduled cleanup
+        logger.info(f"Scheduled cleanup for request {request_id} in {hours} hours")
+    
+    def cleanup_expired_access(self):
+        """Clean up expired temporary access"""
+        config = self.config_manager.load_config()
+        current_time = datetime.datetime.now()
+        
+        for temp_access in config.get("temporary_access", []):
+            request = TemporaryAccessRequest(**temp_access)
+            if request.status == "approved" and current_time >= request.expires_at:
+                self._cleanup_temporary_objects(request)
+                # Update status to expired
+                temp_access["status"] = "expired"
+        
+        self.config_manager.save_config(config)
+    
+    def _cleanup_temporary_objects(self, request: TemporaryAccessRequest):
+        """Remove temporary IdM objects"""
+        temp_suffix = f"temp-{request.id[:8]}"
+        
+        # Remove temporary objects (in reverse order of creation)
+        temp_sudo = f"{request.application}-{request.environment}-{request.role}-sudo-temp-{temp_suffix}"
+        temp_hbac = f"{request.application}-{request.environment}-{request.role}-temp-{temp_suffix}"
+        temp_posix_group = f"{request.application}-{request.environment}-{request.role}-posix-{temp_suffix}"
+        temp_ext_group = f"{request.application}-{request.environment}-{request.role}-{temp_suffix}"
+        
+        # Delete sudo rule
+        IdMCommand.run_command(["ipa", "sudorule-del", temp_sudo])
+        
+        # Delete HBAC rule
+        IdMCommand.run_command(["ipa", "hbacrule-del", temp_hbac])
+        
+        # Delete POSIX group
+        IdMCommand.run_command(["ipa", "group-del", temp_posix_group])
+        
+        # Delete external group
+        IdMCommand.run_command(["ipa", "group-del", temp_ext_group])
+        
+        logger.info(f"Cleaned up temporary access for request {request.id}")
+    
+    def revoke_access(self, request_id: str):
+        """Revoke temporary access before expiration"""
+        config = self.config_manager.load_config()
+        
+        for temp_access in config.get("temporary_access", []):
+            if temp_access["id"] == request_id:
+                request = TemporaryAccessRequest(**temp_access)
+                self._cleanup_temporary_objects(request)
+                temp_access["status"] = "revoked"
+                break
+        
+        self.config_manager.save_config(config)
 
 class IdMManager:
     """Manages IdM operations"""
@@ -323,6 +496,7 @@ class IdMManager:
 # Global instances
 idm_manager = IdMManager()
 config_manager = ConfigManager()
+temp_access_manager = TemporaryAccessManager(idm_manager, config_manager)
 
 # API Endpoints
 @app.get("/api/health")
@@ -499,6 +673,68 @@ async def delete_application(app_name: str):
             
     except Exception as e:
         logger.error(f"Failed to delete application: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/temporary-access")
+async def get_temporary_access_requests():
+    """Get list of temporary access requests"""
+    try:
+        config = config_manager.load_config()
+        
+        # Clean up expired access first
+        temp_access_manager.cleanup_expired_access()
+        
+        # Return current requests
+        return config.get("temporary_access", [])
+    except Exception as e:
+        logger.error(f"Failed to get temporary access requests: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/temporary-access/grant")
+async def grant_temporary_access(grant_request: TemporaryAccessGrant):
+    """Grant temporary access to a user"""
+    try:
+        temp_request = temp_access_manager.grant_temporary_access(grant_request)
+        return {
+            "message": "Temporary access granted successfully",
+            "request": temp_request.dict()
+        }
+    except Exception as e:
+        logger.error(f"Failed to grant temporary access: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/temporary-access/{request_id}/approve")
+async def approve_temporary_access(request_id: str):
+    """Approve a pending temporary access request"""
+    try:
+        config = config_manager.load_config()
+        
+        for temp_access in config.get("temporary_access", []):
+            if temp_access["id"] == request_id and temp_access["status"] == "pending":
+                request = TemporaryAccessRequest(**temp_access)
+                temp_access_manager._create_temporary_objects(request)
+                temp_access["status"] = "approved"
+                temp_access["approved_at"] = datetime.datetime.now().isoformat()
+                temp_access["approved_by"] = "admin"  # In real implementation, get from auth
+                break
+        else:
+            raise HTTPException(status_code=404, detail="Request not found or not pending")
+        
+        config_manager.save_config(config)
+        return {"message": "Access request approved successfully"}
+        
+    except Exception as e:
+        logger.error(f"Failed to approve temporary access: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/temporary-access/{request_id}/revoke")
+async def revoke_temporary_access(request_id: str):
+    """Revoke temporary access"""
+    try:
+        temp_access_manager.revoke_access(request_id)
+        return {"message": "Temporary access revoked successfully"}
+    except Exception as e:
+        logger.error(f"Failed to revoke temporary access: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
