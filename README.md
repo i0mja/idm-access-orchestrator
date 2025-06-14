@@ -1,73 +1,311 @@
-# Welcome to your Lovable project
 
-## Project info
+# IdM Access Configurator (ACF)
 
-**URL**: https://lovable.dev/projects/ef8ccc49-188e-4380-aec5-fb0d8117ef82
+A comprehensive web-based platform for managing Red Hat Identity Management (IdM) access control with Active Directory integration. This enterprise-grade solution automates the creation and management of POSIX groups, external groups, HBAC rules, and sudo rules across multiple trusted AD domains.
 
-## How can I edit this code?
+## 🎯 Overview
 
-There are several ways of editing your application.
+The IdM Access Configurator simplifies complex IdM operations by providing a unified interface to:
 
-**Use Lovable**
+- **Automate Group Creation**: Generate POSIX and external groups with proper AD trust linking
+- **Streamline RBAC**: Implement role-based access control across dev/test/production environments  
+- **Centralize Management**: Control Linux access through Active Directory group membership
+- **Enforce Compliance**: Maintain audit trails and consistent access policies
+- **Scale Operations**: Support multiple applications, environments, and AD domains
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/ef8ccc49-188e-4380-aec5-fb0d8117ef82) and start prompting.
+## 🏗️ Architecture
 
-Changes made via Lovable will be committed automatically to this repo.
+### Frontend
+- **React 18** with TypeScript for type-safe development
+- **Tailwind CSS** with shadcn/ui for consistent enterprise styling
+- **Responsive Design** optimized for desktop and tablet usage
+- **Real-time Updates** with live status monitoring
 
-**Use your preferred IDE**
+### Backend  
+- **FastAPI** for high-performance REST API
+- **Python 3.11** with full type annotations
+- **Subprocess Integration** for native IPA command execution
+- **JSON/YAML Configuration** with automated backups
 
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
+### Integration Layer
+- **Direct IPA Commands**: ipa group-add, ipa hbacrule-add, ipa sudorule-add
+- **Kerberos Authentication**: Secure IdM operations using admin credentials
+- **LDAP Connectivity**: Optional AD group creation via GSSAPI
+- **PowerShell Remoting**: Alternative AD group creation method
 
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
+## 🚀 Quick Start
 
-Follow these steps:
+### Prerequisites
 
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
+1. **Red Hat IdM/FreeIPA Environment**
+   - IdM server with admin access
+   - Active Kerberos ticket (`kinit admin`)
+   - Network connectivity to trusted AD domains
 
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
+2. **System Requirements**
+   - Python 3.11+
+   - Node.js 18+
+   - Modern web browser
 
-# Step 3: Install the necessary dependencies.
-npm i
+### Installation
 
-# Step 4: Start the development server with auto-reloading and an instant preview.
-npm run dev
+1. **Clone and Setup Backend**
+   ```bash
+   cd backend
+   chmod +x run.sh
+   ./run.sh
+   ```
+
+2. **Setup Frontend** 
+   ```bash
+   npm install
+   npm run dev
+   ```
+
+3. **Access Application**
+   - Frontend: http://localhost:3000
+   - Backend API: http://localhost:8000
+   - API Documentation: http://localhost:8000/docs
+
+## 💼 Usage
+
+### 1. Configure Trust Domains
+Navigate to the **Domains** tab to view configured AD trusts. The system automatically discovers trust relationships using `ipa trust-find`.
+
+### 2. Create Applications
+Use the **Applications** tab to define new applications:
+- Enter application name (e.g., "webserver", "database")
+- Select target AD domains
+- System auto-generates DEV/QUA/PRD environments
+
+### 3. Apply Configuration
+Click **Apply** to create all IdM objects:
+- Host groups with wildcard patterns
+- External groups linked to AD
+- POSIX groups containing external groups  
+- HBAC rules for SSH access
+- Sudo rules with role-appropriate commands
+
+### 4. Test Access
+Use the **Testing** tab to validate configurations:
+- Run HBAC tests against specific users/hosts
+- Verify sudo rule functionality
+- Troubleshoot access issues
+
+## 🔧 Configuration
+
+### Default Role Templates
+
+| Role | Sudo Commands | Description |
+|------|---------------|-------------|
+| **full** | `ALL` | Complete administrative access |  
+| **devops** | `systemctl`, `journalctl` | Service management operations |
+| **readonly** | `cat`, `less`, `tail`, `head` | Read-only system access |
+
+### Environment Patterns
+
+| Environment | Host Pattern | Usage |
+|-------------|--------------|-------|
+| **DEV** | `*{app}*dev*` | Development systems |
+| **QUA** | `*{app}*qua*` | Quality assurance/testing |
+| **PRD** | `*{app}*prd*` | Production systems |
+
+### Configuration Storage
+
+- **Primary Config**: `/etc/idm_acf.json`
+- **Backups**: `/var/log/idm_acf_backup_*.yaml`
+- **Audit Logs**: Timestamped operation logs with results
+
+## 🔐 Security
+
+### Authentication
+- Kerberos-based authentication to IdM
+- No passwords stored in application
+- Service account recommended for production
+
+### Authorization  
+- Requires IdM admin or equivalent privileges
+- Sudo access needed for configuration file management
+- Network ACLs should restrict API access
+
+### Audit Trail
+- All configuration changes logged with timestamps
+- YAML backups created before each operation
+- Results tracking for compliance reporting
+
+## 🌐 API Reference
+
+### Key Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/trusts` | List trusted AD domains |
+| `POST` | `/api/applications` | Create new application |
+| `POST` | `/api/applications/{name}/apply` | Apply IdM configuration |
+| `GET` | `/api/status` | System health and connectivity |
+| `POST` | `/api/test` | Test user access permissions |
+
+### Example API Usage
+
+```bash
+# Get system status
+curl http://localhost:8000/api/status
+
+# Create application  
+curl -X POST http://localhost:8000/api/applications \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "webapp",
+    "description": "Web application servers", 
+    "realms": ["DOMAIN1", "DOMAIN2"]
+  }'
+
+# Apply configuration
+curl -X POST http://localhost:8000/api/applications/webapp/apply \
+  -H "Content-Type: application/json" \
+  -d '{"application_name": "webapp", "create_ad_groups": false}'
 ```
 
-**Edit a file directly in GitHub**
+## 🔍 Troubleshooting
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+### Common Issues
 
-**Use GitHub Codespaces**
+**IdM Connection Failed**
+- Verify Kerberos ticket: `klist`
+- Renew if expired: `kinit admin`
+- Check network connectivity to IdM server
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+**Trust Domains Not Found**  
+- Confirm AD trusts: `ipa trust-find`
+- Verify DNS resolution to AD domains
+- Check trust relationship health
 
-## What technologies are used for this project?
+**Group Creation Failed**
+- Ensure unique group names
+- Verify sufficient IdM privileges
+- Check for existing conflicting objects
 
-This project is built with:
+**Host Pattern Matching**
+- Review enrolled hosts: `ipa host-find`
+- Adjust wildcard patterns as needed
+- Consider DNS naming conventions
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+### Debug Mode
 
-## How can I deploy this project?
+Enable verbose logging by setting environment variable:
+```bash
+export DEBUG=true
+python backend/main.py
+```
 
-Simply open [Lovable](https://lovable.dev/projects/ef8ccc49-188e-4380-aec5-fb0d8117ef82) and click on Share -> Publish.
+## 🤝 Enterprise Integration
 
-## Can I connect a custom domain to my Lovable project?
+### Production Deployment
 
-Yes, you can!
+1. **Service Account Setup**
+   ```bash
+   ipa user-add idm-acf --first="IdM" --last="ACF Service"
+   ipa group-add-member admins --users=idm-acf
+   ```
 
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
+2. **Systemd Service**
+   ```ini
+   [Unit]
+   Description=IdM Access Configurator
+   After=network.target
+   
+   [Service]
+   Type=simple
+   User=idm-acf
+   ExecStart=/opt/idm-acf/backend/venv/bin/python main.py
+   WorkingDirectory=/opt/idm-acf/backend
+   Restart=always
+   
+   [Install]
+   WantedBy=multi-user.target
+   ```
 
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/tips-tricks/custom-domain#step-by-step-guide)
+3. **Reverse Proxy (nginx)**
+   ```nginx
+   location / {
+       proxy_pass http://localhost:3000;
+       proxy_set_header Host $host;
+   }
+   
+   location /api {
+       proxy_pass http://localhost:8000;
+       proxy_set_header Host $host;  
+   }
+   ```
+
+### AD Integration Options
+
+**Option 1: LDAP with GSSAPI**
+```bash
+# Requires krb5-workstation and proper keytab
+ldapadd -Y GSSAPI -H ldap://domain.com
+```
+
+**Option 2: PowerShell Remoting**
+```powershell
+# From Linux with PowerShell Core
+pwsh -Command "New-ADGroup -Name 'IdM_app_dev_full' -GroupScope Global"
+```
+
+## 📊 Monitoring
+
+### Health Checks
+- IdM connectivity status
+- Trust relationship health  
+- Configuration file integrity
+- Application object consistency
+
+### Metrics
+- Applications configured
+- Enrolled hosts managed
+- Trust domains active
+- Recent operation success rate
+
+## 🔄 Backup & Recovery
+
+### Automated Backups
+- Configuration snapshots before each change
+- YAML format for human readability
+- Timestamped retention policy
+
+### Recovery Process
+1. Identify backup file in `/var/log/idm_acf_backup_*.yaml`
+2. Review configuration diff
+3. Import via API: `POST /api/import`
+4. Verify and apply changes
+
+## 📈 Roadmap
+
+### Planned Features
+- [ ] Advanced role templates with custom commands
+- [ ] Multi-forest AD support
+- [ ] REST API for external integrations  
+- [ ] Configuration validation and drift detection
+- [ ] Automated compliance reporting
+- [ ] Integration with Red Hat Satellite/Foreman
+
+### Contributing
+This is an enterprise solution designed for Red Hat IdM environments. Contributions welcome for:
+- Additional role templates
+- Enhanced AD integration methods
+- Monitoring and alerting improvements
+- Documentation and examples
+
+## 📄 License
+
+Enterprise deployment ready. Customize as needed for your organization's requirements.
+
+## 🆘 Support
+
+For enterprise support and deployment assistance:
+- Review troubleshooting section above
+- Check IdM server logs: `/var/log/ipaserver-install.log`
+- Verify trust configurations: `ipa trust-show DOMAIN.COM`
+- Validate DNS resolution and network connectivity
+
+This comprehensive platform transforms complex IdM operations into streamlined, enterprise-ready access management workflows.
