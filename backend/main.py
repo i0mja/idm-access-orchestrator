@@ -372,15 +372,21 @@ class IdMManager:
             env["IPA_SERVER"] = connection_test.server
             env["IPA_REALM"] = connection_test.realm
             
-            # Test basic connection with kinit
-            kinit_cmd = ["kinit", connection_test.username]
-            
-            # Use echo to pipe password (simplified - in production use proper auth)
-            echo_cmd = ["echo", connection_test.password]
-            
-            # Test connection by trying to authenticate
-            test_cmd = ["ipa", "user-show", connection_test.username]
-            result = IdMCommand.run_command(test_cmd)
+        # Authenticate using kinit
+        kinit_cmd = ["kinit", connection_test.username]
+        kinit_proc = subprocess.run(
+            kinit_cmd,
+            input=connection_test.password + "\n",
+            capture_output=True,
+            text=True,
+        )
+
+        if kinit_proc.returncode != 0:
+            return {"success": False, "error": kinit_proc.stderr.strip()}
+
+        # Test connection by trying to authenticate
+        test_cmd = ["ipa", "user-show", connection_test.username]
+        result = IdMCommand.run_command(test_cmd)
             
             if result.get("success"):
                 # Get server info
@@ -555,7 +561,9 @@ class IdMManager:
     def _match_pattern(self, hostname: str, pattern: str) -> bool:
         """Simple wildcard matching"""
         import re
-        regex_pattern = pattern.replace("*", ".*")
+        # Escape special regex chars in pattern before replacing '*' wildcard
+        escaped = re.escape(pattern)
+        regex_pattern = '^' + escaped.replace(r'\*', '.*') + '$'
         return bool(re.match(regex_pattern, hostname, re.IGNORECASE))
     
     def _create_external_group(self, name: str, realm: str, ad_group: str, results: Dict[str, Any]):
