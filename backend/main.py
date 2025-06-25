@@ -371,36 +371,36 @@ class IdMManager:
             env = os.environ.copy()
             env["IPA_SERVER"] = connection_test.server
             env["IPA_REALM"] = connection_test.realm
-            
-        # Authenticate using kinit
-        kinit_cmd = ["kinit", connection_test.username]
-        kinit_proc = subprocess.run(
-            kinit_cmd,
-            input=connection_test.password + "\n",
-            capture_output=True,
-            text=True,
-        )
 
-        if kinit_proc.returncode != 0:
-            return {"success": False, "error": kinit_proc.stderr.strip()}
+            # Authenticate using kinit
+            kinit_cmd = ["kinit", connection_test.username]
+            kinit_proc = subprocess.run(
+                kinit_cmd,
+                input=connection_test.password + "\n",
+                capture_output=True,
+                text=True,
+            )
 
-        # Test connection by trying to authenticate
-        test_cmd = ["ipa", "user-show", connection_test.username]
-        result = IdMCommand.run_command(test_cmd)
-            
+            if kinit_proc.returncode != 0:
+                return {"success": False, "error": kinit_proc.stderr.strip()}
+
+            # Test connection by trying to authenticate
+            test_cmd = ["ipa", "user-show", connection_test.username]
+            result = IdMCommand.run_command(test_cmd)
+
             if result.get("success"):
                 # Get server info
                 info_cmd = ["ipa", "config-show"]
                 info_result = IdMCommand.run_command(info_cmd)
-                
+
                 # Get hosts count
                 hosts_cmd = ["ipa", "host-find", "--sizelimit=0"]
                 hosts_result = IdMCommand.run_command(hosts_cmd)
-                
+
                 hosts_count = 0
                 if hosts_result.get("success") and "result" in hosts_result:
                     hosts_count = len(hosts_result["result"])
-                
+
                 return {
                     "success": True,
                     "message": "Connection successful",
